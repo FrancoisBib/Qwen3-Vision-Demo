@@ -35,10 +35,6 @@ A powerful multimodal AI chat application built with Qwen3-VL (Vision Language) 
 ### Required
 - `API_KEY`: Your OpenRouter API key (get it from https://openrouter.ai/)
 
-
-### Other
-- `MODELSCOPE_ENVIRONMENT`: Set to "studio" for Chinese interface
-
 ## Local Development
 
 ### 1. Clone the repository
