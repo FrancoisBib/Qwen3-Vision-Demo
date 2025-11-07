@@ -14,14 +14,32 @@ from ui_components.logo import Logo
 from ui_components.thinking_button import ThinkingButton
 
 from openai import OpenAI
+import socket
+import requests
+import urllib3
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
-# Initialize OpenAI client if API key is available
+# Disable SSL warnings for testing purposes
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Initialize OpenAI client with enhanced network configuration
 client = None
 if api_key:
-    client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-    )
+    # Configuration de timeout pour la production
+    timeout_config = (30, 300)  # (connect timeout, read timeout)
+    
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_config
+        )
+        print("✅ OpenAI client initialized with enhanced network configuration")
+    except Exception as e:
+        print(f"❌ Failed to initialize OpenAI client: {e}")
+        print("Continuing with client=None - API calls will fail but app will run")
+        client = None
 else:
     print("Warning: API_KEY environment variable not set. The application will run but API calls will fail.")
     print("Please set the API_KEY environment variable to use the application properly.")
@@ -36,27 +54,82 @@ def encode_file_to_base64(file_path):
 
 
 def file_path_to_oss_url(file_path: str):
+    """Upload file to OSS with enhanced error handling and port support"""
     if file_path.startswith("http"):
         return file_path
     
     # If bucket is not configured, return the original file path
     if not bucket:
+        print("OSS bucket not configured, returning local file path")
         return file_path
         
     ext = file_path.split('.')[-1]
     object_name = f'studio-temp/Qwen3-VL-Demo/{uuid.uuid4()}.{ext}'
     try:
-        response = bucket.put_object_from_file(object_name, file_path)
+        # Configuration avec timeout étendu pour upload
+        bucket.put_object_from_file(object_name, file_path, progress_callback=None)
         file_url = file_path
-        if response.status == HTTPStatus.OK:
-            file_url = bucket.sign_url('GET',
-                                       object_name,
-                                       60 * 60,
-                                       slash_safe=True)
+        
+        # Génération d'URL avec signature
+        file_url = bucket.sign_url('GET',
+                                   object_name,
+                                   60 * 60,  # 1 heure
+                                   slash_safe=True)
+        print(f"✅ File uploaded to OSS: {object_name}")
         return file_url
     except Exception as e:
-        print(f"Warning: Could not upload file to OSS: {e}")
+        print(f"⚠️ Warning: Could not upload file to OSS: {e}")
+        print("Continuing with local file path")
         return file_path
+
+def test_network_connectivity():
+    """Test de la connectivité réseau vers les services externes"""
+    import json
+    import requests
+    from datetime import datetime
+    
+    results = {
+        'timestamp': datetime.now().isoformat(),
+        'status': 'healthy',
+        'tests': {}
+    }
+    
+    # Test DNS resolution
+    try:
+        import socket
+        socket.gethostbyname('openrouter.ai')
+        results['tests']['dns'] = 'OK'
+    except Exception as e:
+        results['tests']['dns'] = f'FAILED: {e}'
+        results['status'] = 'degraded'
+    
+    # Test OpenRouter API connectivity
+    try:
+        response = requests.get('https://openrouter.ai/api/v1/models', timeout=10)
+        results['tests']['openrouter'] = f'HTTP {response.status_code}'
+    except Exception as e:
+        results['tests']['openrouter'] = f'FAILED: {e}'
+        results['status'] = 'degraded'
+    
+    # Test GitHub connectivity
+    try:
+        response = requests.get('https://api.github.com', timeout=10)
+        results['tests']['github'] = f'HTTP {response.status_code}'
+    except Exception as e:
+        results['tests']['github'] = f'FAILED: {e}'
+        results['status'] = 'degraded'
+    
+    # Test OSS endpoint if configured
+    if bucket:
+        try:
+            # Test basique de connectivité OSS
+            test_url = bucket.sign_url('GET', 'test', 60)
+            results['tests']['oss'] = 'Config OK'
+        except Exception as e:
+            results['tests']['oss'] = f'FAILED: {e}'
+            results['status'] = 'degraded'
+    
+    return results
 
 
 def format_history(history, oss_cache, sys_prompt=None):
@@ -910,6 +983,75 @@ with gr.Blocks(css=css, fill_width=True) as demo:
         outputs=[voice_state]
     )
 
+# Function for health check - will be added as a component
+def create_health_check():
+    """Create a health check interface component"""
+    def health_status():
+        import json
+        from datetime import datetime
+        
+        # Test de la connectivité réseau
+        try:
+            connectivity = test_network_connectivity()
+            status = {
+                "status": "healthy",
+                "timestamp": connectivity['timestamp'],
+                "connectivity": connectivity['tests'],
+                "service": "Qwen3-VL Demo",
+                "version": "1.0.0"
+            }
+            
+            if connectivity['status'] == 'degraded':
+                status["status"] = "degraded"
+            
+            return gr.JSON(status)
+        except Exception as e:
+            return gr.JSON({
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            })
+    
+    return health_status
+
+# Simple health check function for production
+def simple_health_check():
+    """Simple health check that always returns OK"""
+    return {"status": "healthy", "service": "Qwen3-VL Demo", "version": "1.0.0"}
+
 if __name__ == "__main__":
-    demo.queue(default_concurrency_limit=100,
-               max_size=100).launch(ssr_mode=False, max_threads=100)
+    print("🚀 Démarrage de Qwen3-VL Demo")
+    
+    # Configuration par défaut
+    port = int(os.environ.get("PORT", 7860))
+    host = "0.0.0.0"
+    share = False
+    debug = os.environ.get("DEBUG", "false").lower() == "true"
+    
+    print(f"🌐 Host: {host}")
+    print(f"🔌 Port: {port}")
+    print(f"🐛 Debug: {debug}")
+    
+    # Test de connectivité simple
+    try:
+        connectivity = test_network_connectivity()
+        print(f"✅ Connectivité: {connectivity['status']}")
+    except Exception as e:
+        print(f"⚠️ Erreur test connectivité: {e}")
+    
+    # Configuration queue
+    demo.queue(
+        default_concurrency_limit=50,
+        max_size=100
+    ).launch(
+        server_name=host,
+        server_port=port,
+        share=share,
+        show_error=debug,
+        quiet=not debug,
+        ssr_mode=False,
+        max_threads=50
+    )
+    
+    print(f"✅ Application démarrée sur http://{host}:{port}")
+    print("🎯 Qwen3-VL Demo est prêt!")

@@ -33,7 +33,7 @@ A powerful multimodal AI chat application built with Qwen3-VL (Vision Language) 
 ## Environment Variables
 
 ### Required
-- `API_KEY`: Your OpenRouter API key (get it from https://openrouter.ai/)
+- `API_KEY`: Your OpenRouter API key (get it from https://openrouter.ai/)w
 
 ## Local Development
 
