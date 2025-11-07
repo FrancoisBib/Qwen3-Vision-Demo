@@ -1,0 +1,445 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Qwen3-VL Demo - Complete AWS Infrastructure",
+  "Parameters": {
+    "KeyName": {
+      "Type": "AWS::EC2::KeyPair::KeyName",
+      "Description": "EC2 Key Pair for SSH access",
+      "Default": "qwen3-vl-key"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "t3.medium",
+      "Description": "EC2 Instance Type",
+      "AllowedValues": [
+        "t3.micro", "t3.small", "t3.medium", "t3.large",
+        "t2.micro", "t2.small", "t2.medium", "t2.large"
+      ]
+    },
+    "APIToken": {
+      "Type": "String",
+      "NoEcho": true,
+      "Description": "OpenRouter API Token"
+    },
+    "BotsKey": {
+      "Type": "String",
+      "NoEcho": true,
+      "Description": "OpenRouter API Key (Alternative)"
+    },
+    "Environment": {
+      "Type": "String",
+      "Default": "production",
+      "AllowedValues": ["development", "staging", "production"],
+      "Description": "Environment type"
+    },
+    "CreateLoadBalancer": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": ["true", "false"],
+      "Description": "Whether to create an Application Load Balancer"
+    }
+  },
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": { "default": "Network Configuration" },
+          "Parameters": ["KeyName"]
+        },
+        {
+          "Label": { "default": "Compute Configuration" },
+          "Parameters": ["InstanceType"]
+        },
+        {
+          "Label": { "default": "Application Configuration" },
+          "Parameters": ["APIToken", "BotsKey", "Environment", "CreateLoadBalancer"]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-vpc" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-igw" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "VPCGatewayAttachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "InternetGatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "CidrBlock": "10.0.1.0/24",
+        "MapPublicIpOnLaunch": true,
+        "AvailabilityZone": { "Fn::Select": [ "0", { "Fn::GetAZs": { "Ref": "AWS::Region" } } ] },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-public-subnet" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "RouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": { "Ref": "VPC" },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-rt" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "Route": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "VPCGatewayAttachment",
+      "Properties": {
+        "RouteTableId": { "Ref": "RouteTable" },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": { "Ref": "InternetGateway" }
+      }
+    },
+    "SubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": { "Ref": "RouteTable" },
+        "SubnetId": { "Ref": "PublicSubnet" }
+      }
+    },
+    "ElasticIP": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-eip" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "NatGateway": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "AllocationId": { "Fn::GetAtt": [ "ElasticIP", "AllocationId" ] },
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-nat" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for Qwen3-VL application",
+        "VpcId": { "Ref": "VPC" },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 22,
+            "ToPort": 22,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "SSH access"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTP access"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS access"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 8080,
+            "ToPort": 8080,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "Application port"
+          }
+        ],
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTP outbound"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS outbound"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": -1,
+            "ToPort": -1,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "All TCP outbound for external APIs"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": -1,
+            "ToPort": -1,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "All UDP outbound for streaming"
+          }
+        ],
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-sg" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "ApplicationBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": { "Fn::Sub": "qwen3-vl-app-${AWS::AccountId}-${AWS::Region}" },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": false,
+          "BlockPublicPolicy": false,
+          "IgnorePublicAcls": false,
+          "RestrictPublicBuckets": false
+        },
+        "BucketPolicy": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "PublicReadGetObject",
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "s3:GetObject",
+              "Resource": { "Fn::Sub": "arn:aws:s3:::${ApplicationBucket}/*" }
+            }
+          ]
+        },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-app-bucket" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [ { "Ref": "EC2Role" } ]
+      }
+    },
+    "EC2Role": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess",
+          "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "Qwen3VLAppPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams"
+                  ],
+                  "Resource": "arn:aws:logs:*:*:*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-ec2-role" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "EC2Instance": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": { "Fn::FindInMap": [ "AWS", "Region", "LatestAmiId" ] },
+        "InstanceType": { "Ref": "InstanceType" },
+        "IamInstanceProfile": { "Ref": "InstanceProfile" },
+        "KeyName": { "Ref": "KeyName" },
+        "SecurityGroupIds": [ { "Ref": "SecurityGroup" } ],
+        "SubnetId": { "Ref": "PublicSubnet" },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Sub": "#!/bin/bash\nset -e\n\n# Install dependencies\nyum update -y\nyum install -y python3 python3-pip nginx curl wget netcat-openbsd\n\n# Configure network\necho 'net.ipv4.ip_forward = 1' >> /etc/sysctl.conf\nsysctl -p\n\n# Install Python packages\npip3 install --upgrade pip\npip3 install gradio>=5.0.0 modelscope_studio>=0.3.0 openai>=1.0.0 oss2>=2.18.0 gunicorn>=21.2.0 boto3>=1.26.0\n\n# Create application directory\nmkdir -p /opt/qwen3-vl-demo\ncd /opt/qwen3-vl-demo\n\n# Download application from S3\naws s3 sync s3://${ApplicationBucket}/ /opt/qwen3-vl-demo/\n\n# Create systemd service\ncat > /etc/systemd/system/qwen3-vl-demo.service << 'EOF'\n[Unit]\nDescription=Qwen3-VL Demo Application\nAfter=network.target\nWants=network.target\n\n[Service]\nType=simple\nUser=ec2-user\nGroup=ec2-user\nWorkingDirectory=/opt/qwen3-vl-demo\nEnvironment=API_KEY=${APIToken}\nEnvironment=MODELSCOPE_ENVIRONMENT=${Environment}\nEnvironment=PORT=8080\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=PYTHONDONTWRITEBYTECODE=1\nExecStart=/usr/local/bin/gunicorn --bind 0.0.0.0:8080 --workers 2 --timeout 300 app_prod:demo\nRestart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\n# Configure Nginx\ncat > /etc/nginx/conf.d/qwen3-vl.conf << 'EOF'\nserver {\n    listen 80;\n    server_name _;\n    \n    proxy_connect_timeout 300s;\n    proxy_send_timeout 300s;\n    proxy_read_timeout 300s;\n    \n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    \n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection \"upgrade\";\n    \n    add_header X-Frame-Options DENY;\n    add_header X-Content-Type-Options nosniff;\n    add_header X-XSS-Protection \"1; mode=block\";\n    \n    location / {\n        proxy_pass http://127.0.0.1:8080;\n        proxy_buffering off;\n        proxy_cache off;\n        proxy_redirect off;\n    }\n    \n    location /health {\n        proxy_pass http://127.0.0.1:8080/health;\n        access_log off;\n    }\n}\nEOF\n\n# Start services\nsystemctl daemon-reload\nsystemctl enable qwen3-vl-demo\nsystemctl start qwen3-vl-demo\n\nsystemctl enable nginx\nsystemctl restart nginx\n\n# Test application\nsleep 30\ncurl -f http://localhost:8080 || echo \"Application not ready\""
+          }
+        },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-demo" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "ApplicationLoadBalancer": {
+      "Type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "Condition": "CreateLoadBalancerCondition",
+      "Properties": {
+        "Name": "qwen3-vl-alb",
+        "Scheme": "internet-facing",
+        "Type": "application",
+        "Subnets": [ { "Ref": "PublicSubnet" } ],
+        "SecurityGroups": [ { "Ref": "SecurityGroup" } ],
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-alb" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "TargetGroup": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "Condition": "CreateLoadBalancerCondition",
+      "Properties": {
+        "Name": "qwen3-vl-tg",
+        "Port": 80,
+        "Protocol": "HTTP",
+        "VpcId": { "Ref": "VPC" },
+        "TargetType": "instance",
+        "HealthCheckPath": "/health",
+        "HealthCheckPort": "traffic-port",
+        "HealthCheckProtocol": "HTTP",
+        "HealthyThresholdCount": 2,
+        "UnhealthyThresholdCount": 5,
+        "HealthCheckTimeoutSeconds": 30,
+        "Matcher": {
+          "HttpCode": "200-399"
+        },
+        "Tags": [
+          { "Key": "Name", "Value": "qwen3-vl-tg" },
+          { "Key": "Environment", "Value": { "Ref": "Environment" } }
+        ]
+      }
+    },
+    "LoadBalancerListener": {
+      "Type": "AWS::ElasticLoadBalancingV2::Listener",
+      "Condition": "CreateLoadBalancerCondition",
+      "Properties": {
+        "DefaultActions": [
+          {
+            "Type": "forward",
+            "TargetGroupArn": { "Ref": "TargetGroup" }
+          }
+        ],
+        "LoadBalancerArn": { "Ref": "ApplicationLoadBalancer" },
+        "Port": 80,
+        "Protocol": "HTTP"
+      }
+    },
+    "TargetGroupAttachment": {
+      "Type": "AWS::ElasticLoadBalancingV2::TargetGroupAttachment",
+      "Condition": "CreateLoadBalancerCondition",
+      "Properties": {
+        "TargetGroupArn": { "Ref": "TargetGroup" },
+        "TargetId": { "Ref": "EC2Instance" },
+        "Port": 80
+      }
+    }
+  },
+  "Conditions": {
+    "CreateLoadBalancerCondition": { "Fn::Equals": [ { "Ref": "CreateLoadBalancer" }, "true" ] }
+  },
+  "Mappings": {
+    "AWS": {
+      "Region": {
+        "LatestAmiId": {
+          "us-east-1": "ami-0abcdef1234567890",
+          "us-west-2": "ami-0abcdef1234567890"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Description": "EC2 Instance ID",
+      "Value": { "Ref": "EC2Instance" },
+      "Export": {
+        "Name": "Qwen3VL-InstanceId"
+      }
+    },
+    "PublicIP": {
+      "Description": "Public IP Address",
+      "Value": { "Fn::GetAtt": [ "EC2Instance", "PublicIp" ] },
+      "Export": {
+        "Name": "Qwen3VL-PublicIP"
+      }
+    },
+    "PublicDNS": {
+      "Description": "Public DNS Name",
+      "Value": { "Fn::GetAtt": [ "EC2Instance", "PublicDnsName" ] },
+      "Export": {
+        "Name": "Qwen3VL-PublicDNS"
+      }
+    },
+    "ApplicationURL": {
+      "Description": "Application URL",
+      "Value": { "Fn::Sub": "http://${EC2Instance.PublicDnsName}:8080" },
+      "Export": {
+        "Name": "Qwen3VL-URL"
+      }
+    },
+    "BucketName": {
+      "Description": "S3 Bucket Name",
+      "Value": { "Ref": "ApplicationBucket" },
+      "Export": {
+        "Name": "Qwen3VL-Bucket"
+      }
+    },
+    "LoadBalancerDNS": {
+      "Description": "Load Balancer DNS Name",
+      "Condition": "CreateLoadBalancerCondition",
+      "Value": { "Fn::GetAtt": [ "ApplicationLoadBalancer", "DNSName" ] },
+      "Export": {
+        "Name": "Qwen3VL-ALBDNS"
+      }
+    }
+  }
+}
