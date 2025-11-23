@@ -1,6 +1,6 @@
 ---
 title: Qwen3 VL Demo
-emoji: 😻
+by : Francois Bib 
 colorFrom: yellow
 colorTo: pink
 sdk: gradio
